@@ -1,0 +1,22 @@
+server:
+  port: 8081
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/clauseiq
+    username: root
+    password: root
+
+  ai:
+    ollama:
+      base-url: http://localhost:11434
+
+      chat:
+        model: gemma4:e4b
+
+      embedding:
+        model: mxbai-embed-large
+
+    vectorstore:
+      pgvector:
+        initialize-schema: true
