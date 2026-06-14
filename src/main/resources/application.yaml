@@ -6,21 +6,140 @@ spring:
     url: jdbc:postgresql://localhost:5432/clauseiq
     username: root
     password: root
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 300000
+      connection-timeout: 20000
+      max-lifetime: 1200000
+
   jpa:
     hibernate:
       ddl-auto: update
-
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
 
   ai:
     ollama:
       base-url: http://localhost:11434
-
       chat:
         model: gemma4:e4b
-
+        options:
+          temperature: 0.1
+          num-predict: 50
+          timeout: 15s
       embedding:
         model: mxbai-embed-large
-
+        options:
+          num-batch: 1
+          timeout: 10s
     vectorstore:
       pgvector:
         initialize-schema: true
+        index-type: ivfflat
+        dimension: 1024  # Adjust based on mxbai-embed-large dimensions
+
+  cache:
+    type: caffeine
+    caffeine:
+      spec: maximumSize=1000,expireAfterWrite=30m
+
+# Resilience4j
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+    instances:
+      hybridSearch:
+        baseConfig: default
+        slidingWindowSize: 5
+        waitDurationInOpenState: 20s
+      chatService:
+        baseConfig: default
+        waitDurationInOpenState: 15s
+      keywordExtraction:
+        baseConfig: default
+        slidingWindowSize: 5
+        failureRateThreshold: 70
+        waitDurationInOpenState: 5s
+
+  ratelimiter:
+    configs:
+      default:
+        limitForPeriod: 10
+        limitRefreshPeriod: 1s
+        timeoutDuration: 5s
+    instances:
+      chatService:
+        baseConfig: default
+
+  timelimiter:
+    configs:
+      default:
+        timeoutDuration: 20s
+    instances:
+      hybridSearch:
+        timeoutDuration: 25s
+      keywordExtraction:
+        timeoutDuration: 10s
+
+# Custom application configs
+hybrid:
+  search:
+    rrf-k: 60
+    vector-top-k: 5
+    keyword-top-k: 10
+    max-top-k: 50
+    vector-similarity-threshold: 0.6
+    low-score-threshold: 0.02
+    low-score-multiplier: 0.9
+    normal-score-multiplier: 0.5
+    min-threshold: 0.01
+    keyword-extraction-timeout: 8
+
+chat:
+  service:
+    max-documents: 5
+    max-question-length: 200
+    no-results-message: "I could not find that information in the available resumes."
+
+# Monitoring
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus,info
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: clauseiq
+      environment: production
+
+# Logging
+logging:
+  level:
+    root: WARN
+    com.paul.clauseiq: INFO
+    com.paul.clauseiq.service: DEBUG
+    org.springframework.ai: INFO
+    io.github.resilience4j: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: logs/clauseiq.log
+    max-size: 10MB
+    max-history: 7
