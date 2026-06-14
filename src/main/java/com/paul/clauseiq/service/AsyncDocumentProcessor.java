@@ -110,9 +110,9 @@ public class AsyncDocumentProcessor {
 
             TokenTextSplitter splitter = TokenTextSplitter
                     .builder()
-                    .withChunkSize(500)
-                    .withMinChunkSizeChars(200)
-                    .withMinChunkLengthToEmbed(100)
+                    .withChunkSize(800)
+                    .withMinChunkSizeChars(300)
+                    .withMinChunkLengthToEmbed(150)
                     .build();
 
             List<Document> chunks = splitter.apply(documents);
@@ -123,6 +123,11 @@ public class AsyncDocumentProcessor {
                 chunk.getMetadata().put(
                         MetadataConstants.CHUNK_INDEX,
                         i + 1
+                );
+
+                chunk.getMetadata().put(
+                        MetadataConstants.TOTAL_CHUNKS,
+                        chunks.size()
                 );
 
                 chunk.getMetadata().put(
@@ -148,7 +153,15 @@ public class AsyncDocumentProcessor {
 
             vectorStore.add(chunks);
 
-            log.info("Stored {} chunks for document {}", chunks.size(), metadata.getFileName());
+            log.info(
+                    "Document indexed. documentId={}, fileName={}, chunks={}",
+                    metadata.getId(),
+                    metadata.getFileName(),
+                    chunks.size()
+            );
+        } finally {
+            Files.deleteIfExists(filePath);
+            log.info("Deleted temporary file {}", filePath);
         }
     }
 

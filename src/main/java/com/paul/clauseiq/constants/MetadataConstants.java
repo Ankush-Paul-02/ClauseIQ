@@ -10,4 +10,5 @@ public final class MetadataConstants {
     public static final String CONTENT_TYPE = "contentType";
     public static final String UPLOADED_AT = "uploadedAt";
     public static final String CHUNK_INDEX = "chunkIndex";
+    public static final String TOTAL_CHUNKS = "totalChunks";
 }
