@@ -20,11 +20,6 @@ public class ChatController {
     public ChatResponse ask(
             @RequestBody ChatRequest request
     ) {
-
-        return new ChatResponse(
-                chatService.ask(
-                        request.question()
-                )
-        );
+        return chatService.ask(request.question());
     }
 }
