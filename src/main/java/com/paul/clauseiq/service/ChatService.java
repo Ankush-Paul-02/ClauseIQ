@@ -43,9 +43,11 @@ public class ChatService {
 
         List<SourceDto> sources = documents.stream()
                 .map(doc -> new SourceDto(
+                        (String) doc.getMetadata().get(MetadataConstants.DOCUMENT_ID),
                         (String) doc.getMetadata().get(MetadataConstants.FILE_NAME),
                         (Integer) doc.getMetadata().get(MetadataConstants.CHUNK_INDEX)
                 ))
+                .distinct()
                 .toList();
 
         String answer = chatClient
