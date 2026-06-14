@@ -106,48 +106,73 @@ public class AsyncDocumentProcessor {
 
         try (InputStream inputStream = Files.newInputStream(filePath)) {
 
-            List<Document> documents = getDocuments(metadata, inputStream);
+            List<Document> documents = getDocuments(inputStream);
 
             TokenTextSplitter splitter = TokenTextSplitter
                     .builder()
-                    .withChunkSize(500)
-                    .withMinChunkSizeChars(200)
-                    .withMinChunkLengthToEmbed(100)
+                    .withChunkSize(800)
+                    .withMinChunkSizeChars(300)
+                    .withMinChunkLengthToEmbed(150)
                     .build();
 
             List<Document> chunks = splitter.apply(documents);
 
+            for (int i = 0; i < chunks.size(); i++) {
+                Document chunk = chunks.get(i);
+
+                chunk.getMetadata().put(
+                        MetadataConstants.CHUNK_INDEX,
+                        i + 1
+                );
+
+                chunk.getMetadata().put(
+                        MetadataConstants.TOTAL_CHUNKS,
+                        chunks.size()
+                );
+
+                chunk.getMetadata().put(
+                        MetadataConstants.DOCUMENT_ID,
+                        metadata.getId().toString()
+                );
+
+                chunk.getMetadata().put(
+                        MetadataConstants.FILE_NAME,
+                        metadata.getFileName()
+                );
+
+                chunk.getMetadata().put(
+                        MetadataConstants.CONTENT_TYPE,
+                        metadata.getContentType()
+                );
+
+                chunk.getMetadata().put(
+                        MetadataConstants.UPLOADED_AT,
+                        metadata.getUploadedAt().toString()
+                );
+            }
+
             vectorStore.add(chunks);
+
+            log.info(
+                    "Document indexed. documentId={}, fileName={}, chunks={}",
+                    metadata.getId(),
+                    metadata.getFileName(),
+                    chunks.size()
+            );
+        } finally {
+            Files.deleteIfExists(filePath);
+            log.info("Deleted temporary file {}", filePath);
         }
     }
 
     /**
-     * Extracts textual content from the uploaded document and enriches
-     * each extracted section with metadata required during retrieval.
-     * <p>
-     * Metadata is stored alongside embeddings so retrieved chunks can be
-     * traced back to their originating document during citation generation.
+     * Extracts textual content from the uploaded document
      */
-    private static @NonNull List<Document> getDocuments(DocumentMetadata metadata, InputStream inputStream) {
+    private static @NonNull List<Document> getDocuments(InputStream inputStream) {
         TikaDocumentReader reader = new TikaDocumentReader(
-                new InputStreamResource(
-                        inputStream
-                )
+                new InputStreamResource(inputStream)
         );
 
-        List<Document> documents = reader.read();
-
-        documents.forEach(doc -> {
-            doc.getMetadata().put(
-                    MetadataConstants.DOCUMENT_ID,
-                    metadata.getId().toString()
-            );
-
-            doc.getMetadata().put(
-                    MetadataConstants.SOURCE,
-                    metadata.getFileName()
-            );
-        });
-        return documents;
+        return reader.read();
     }
 }

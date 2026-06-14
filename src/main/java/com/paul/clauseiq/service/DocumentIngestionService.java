@@ -7,6 +7,7 @@ import com.paul.clauseiq.repository.DocumentRepository;
 import com.paul.clauseiq.validation.DocumentValidator;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -17,6 +18,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @Transactional
 @RequiredArgsConstructor
@@ -30,9 +32,15 @@ public class DocumentIngestionService {
 
         validator.validate(file);
 
+        String originalFilename = file.getOriginalFilename();
+
+        String extension = originalFilename != null && originalFilename.contains(".")
+                        ? originalFilename.substring(originalFilename.lastIndexOf("."))
+                        : ".tmp";
+
         Path uploadedFile = Files.createTempFile(
                 "clauseiq-",
-                ".pdf"
+                extension
         );
 
         file.transferTo(uploadedFile);
@@ -45,6 +53,13 @@ public class DocumentIngestionService {
                         .status(DocumentStatus.UPLOADED)
                         .uploadedAt(Instant.now())
                         .build()
+        );
+
+        log.info(
+                "Uploaded document id={} file={} size={} bytes",
+                metadata.getId(),
+                metadata.getFileName(),
+                metadata.getFileSize()
         );
 
         publisher.publishEvent(
