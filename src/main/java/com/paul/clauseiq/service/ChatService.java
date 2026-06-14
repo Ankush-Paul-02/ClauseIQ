@@ -6,6 +6,7 @@ import com.paul.clauseiq.dto.SourceDto;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
@@ -25,8 +26,7 @@ public class ChatService {
         List<Document> documents = vectorStore.similaritySearch(
                 SearchRequest.builder()
                         .query(question)
-                        .topK(5)
-                        .similarityThreshold(0.75)
+                        .topK(3)
                         .build()
         );
 
@@ -38,7 +38,16 @@ public class ChatService {
         }
 
         String context = documents.stream()
-                .map(Document::getText)
+                .map(doc -> """
+                        FILE: %s
+                        CHUNK: %s
+                        
+                        %s
+                        """.formatted(
+                        doc.getMetadata().get(MetadataConstants.FILE_NAME),
+                        doc.getMetadata().get(MetadataConstants.CHUNK_INDEX),
+                        doc.getText()
+                ))
                 .collect(Collectors.joining("\n\n"));
 
         List<SourceDto> sources = documents.stream()
@@ -53,12 +62,18 @@ public class ChatService {
         String answer = chatClient
                 .prompt()
                 .system("""
-                        You are a document assistant.
+                        You are a resume search assistant.
                         
-                        Answer ONLY using the supplied context.
+                        Only mention resumes that directly contain
+                        evidence supporting the answer.
                         
-                        If answer is not found say:
-                        I could not find that information.
+                        Never mention resumes that do not contain
+                        the requested skill or information.
+                        
+                        If a resume appears in context but does not
+                        support the answer, ignore it completely.
+                        
+                        Use only supplied context.
                         """)
                 .user("""
                         Context:
