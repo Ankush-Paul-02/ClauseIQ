@@ -2,15 +2,17 @@ package com.paul.clauseiq.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.paul.clauseiq.configuration.AiProperties;
 import com.paul.clauseiq.configuration.HybridSearchConfig;
 import com.paul.clauseiq.constants.MetadataConstants;
 import com.paul.clauseiq.exceptions.SearchException;
+import com.paul.clauseiq.factory.AiStrategyFactory;
+import com.paul.clauseiq.strategy.AIStrategy;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.micrometer.core.annotation.Timed;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
@@ -31,7 +33,9 @@ public class HybridSearchService {
     private final VectorStore vectorStore;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
-    private final ChatClient chatClient;
+    //    private final ChatClient chatClient;
+    private final AiStrategyFactory aiStrategyFactory;
+    private final AiProperties aiProperties;
     private final HybridSearchConfig config;
     private final MeterRegistry meterRegistry;
 
@@ -246,9 +250,7 @@ public class HybridSearchService {
 
         for (int rank = 0; rank < documents.size(); rank++) {
             String id = documents.get(rank).getId();
-            if (id != null) {
-                scores.merge(id, 1.0 / (rrfK + rank), Double::sum);
-            }
+            scores.merge(id, 1.0 / (rrfK + rank), Double::sum);
         }
     }
 
@@ -288,12 +290,16 @@ public class HybridSearchService {
     @CircuitBreaker(name = "keywordExtraction", fallbackMethod = "extractKeywordsFallback")
     private String extractKeywords(String query) {
         try {
+/*
             String keywords = chatClient
                     .prompt()
                     .system(config.getKeywordExtractionPrompt())
                     .user(query)
                     .call()
                     .content();
+*/
+            AIStrategy aiStrategy = aiStrategyFactory.get(aiProperties.getKeywordProvider());
+            String keywords = aiStrategy.extractKeyWords(query);
 
             return keywords != null ? keywords.trim() : query;
         } catch (Exception e) {

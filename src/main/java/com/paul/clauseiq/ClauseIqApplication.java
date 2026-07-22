@@ -9,5 +9,4 @@ public class ClauseIqApplication {
     public static void main(String[] args) {
         SpringApplication.run(ClauseIqApplication.class, args);
     }
-
 }

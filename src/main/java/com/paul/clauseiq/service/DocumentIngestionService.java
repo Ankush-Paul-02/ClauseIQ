@@ -16,6 +16,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 @Slf4j
@@ -28,47 +30,54 @@ public class DocumentIngestionService {
     private final ApplicationEventPublisher publisher;
     private final DocumentValidator validator;
 
-    public UUID upload(MultipartFile file) throws IOException {
+    public List<UUID> upload(MultipartFile[] files) throws IOException {
 
-        validator.validate(file);
+        List<UUID> uuids = new ArrayList<>();
 
-        String originalFilename = file.getOriginalFilename();
+        for (MultipartFile file : files) {
 
-        String extension = originalFilename != null && originalFilename.contains(".")
-                        ? originalFilename.substring(originalFilename.lastIndexOf("."))
-                        : ".tmp";
+            validator.validate(file);
 
-        Path uploadedFile = Files.createTempFile(
-                "clauseiq-",
-                extension
-        );
+            String originalFilename = file.getOriginalFilename();
 
-        file.transferTo(uploadedFile);
+            String extension = originalFilename != null && originalFilename.contains(".")
+                    ? originalFilename.substring(originalFilename.lastIndexOf("."))
+                    : ".tmp";
 
-        DocumentMetadata metadata = repository.save(
-                DocumentMetadata.builder()
-                        .fileName(file.getOriginalFilename())
-                        .contentType(file.getContentType())
-                        .fileSize(file.getSize())
-                        .status(DocumentStatus.UPLOADED)
-                        .uploadedAt(Instant.now())
-                        .build()
-        );
+            Path uploadedFile = Files.createTempFile(
+                    "clauseiq-",
+                    extension
+            );
 
-        log.info(
-                "Uploaded document id={} file={} size={} bytes",
-                metadata.getId(),
-                metadata.getFileName(),
-                metadata.getFileSize()
-        );
+            file.transferTo(uploadedFile);
 
-        publisher.publishEvent(
-                new DocumentUploadedEvent(
-                        metadata.getId(),
-                        uploadedFile
-                )
-        );
+            DocumentMetadata metadata = repository.save(
+                    DocumentMetadata.builder()
+                            .fileName(file.getOriginalFilename())
+                            .contentType(file.getContentType())
+                            .fileSize(file.getSize())
+                            .status(DocumentStatus.UPLOADED)
+                            .uploadedAt(Instant.now())
+                            .build()
+            );
 
-        return metadata.getId();
+            log.info(
+                    "Uploaded document id={} file={} size={} bytes",
+                    metadata.getId(),
+                    metadata.getFileName(),
+                    metadata.getFileSize()
+            );
+
+            publisher.publishEvent(
+                    new DocumentUploadedEvent(
+                            metadata.getId(),
+                            uploadedFile
+                    )
+            );
+
+            uuids.add(metadata.getId());
+        }
+
+        return uuids;
     }
 }

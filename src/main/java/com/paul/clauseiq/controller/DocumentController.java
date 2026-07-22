@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -23,13 +24,17 @@ public class DocumentController {
 
 
     @PostMapping("/upload")
-    public ResponseEntity<UploadResponse> upload(
-            @RequestParam MultipartFile file
+    public ResponseEntity<List<UploadResponse>> upload(
+            @RequestParam MultipartFile[] files
     ) throws IOException {
 
-        UUID documentId = documentIngestionService.upload(file);
+        List<UUID> documentIds = documentIngestionService.upload(files);
 
-        return ResponseEntity.accepted().body(new UploadResponse(documentId));
+        List<UploadResponse> response = documentIds.stream()
+                .map(UploadResponse::new)
+                .toList();
+
+        return ResponseEntity.accepted().body(response);
     }
 
     @GetMapping("/{id}/status")

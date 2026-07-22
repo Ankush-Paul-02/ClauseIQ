@@ -1,17 +1,19 @@
 package com.paul.clauseiq.service;
 
+import com.paul.clauseiq.configuration.AiProperties;
 import com.paul.clauseiq.configuration.ChatServiceConfig;
 import com.paul.clauseiq.constants.MetadataConstants;
 import com.paul.clauseiq.dto.ChatResponse;
 import com.paul.clauseiq.dto.SourceDto;
 import com.paul.clauseiq.exceptions.ChatException;
+import com.paul.clauseiq.factory.AiStrategyFactory;
+import com.paul.clauseiq.strategy.AIStrategy;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import io.micrometer.core.annotation.Timed;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.document.Document;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
@@ -25,7 +27,9 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class ChatService {
 
-    private final ChatClient chatClient;
+    //    private final ChatClient chatClient;
+    private final AiStrategyFactory aiStrategyFactory;
+    private final AiProperties aiProperties;
     private final HybridSearchService hybridSearchService;
     private final ChatServiceConfig config;
     private final MeterRegistry meterRegistry;
@@ -147,7 +151,7 @@ public class ChatService {
         for (int i = 0; i < documents.size(); i++) {
             Document doc = documents.get(i);
             if (i > 0) {
-                contextBuilder.append("\n\n").append("=".repeat(50)).append("\n\n");
+                contextBuilder.append("\n\n").repeat("=", 50).append("\n\n");
             }
 
             String content = doc.getText();
@@ -208,12 +212,9 @@ public class ChatService {
             log.debug("System prompt: {}", systemPrompt);
             log.debug("User prompt length: {}", userPrompt.length());
 
-            String answer = chatClient
-                    .prompt()
-                    .system(systemPrompt)
-                    .user(userPrompt)
-                    .call()
-                    .content();
+            AIStrategy aiStrategy = aiStrategyFactory.get(aiProperties.getChatProvider());
+
+            String answer = aiStrategy.chat(systemPrompt, userPrompt);
 
             if (answer != null) {
                 answer = answer.trim();
@@ -239,8 +240,7 @@ public class ChatService {
         StringBuilder answer = new StringBuilder();
         answer.append("Based on the search results, here's what I found:\n\n");
 
-        for (int i = 0; i < documents.size(); i++) {
-            Document doc = documents.get(i);
+        for (Document doc : documents) {
             String fileName = getMetadataValue(doc, MetadataConstants.FILE_NAME);
             String content = doc.getText();
 
