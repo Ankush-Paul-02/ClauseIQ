@@ -1,8 +1,11 @@
 package com.paul.clauseiq.exceptions;
 
+import lombok.Getter;
+
 /**
  * Exception thrown when document processing operations fail.
  */
+@Getter
 public class DocumentProcessingException extends RuntimeException {
 
     private final String documentId;
@@ -35,11 +38,4 @@ public class DocumentProcessingException extends RuntimeException {
         this.fileName = fileName;
     }
 
-    public String getDocumentId() {
-        return documentId;
-    }
-
-    public String getFileName() {
-        return fileName;
-    }
 }

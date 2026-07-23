@@ -36,7 +36,7 @@ spring:
         chat:
           model: gemini-2.5-flash
           temperature: 0.1
-          max-output-tokens: 50
+          max-output-tokens: 2048
         embedding:
           text:
             model: text-embedding-004
@@ -103,8 +103,8 @@ hybrid:
     vector-top-k: 5
     keyword-top-k: 10
     max-top-k: 50
-    vector-similarity-threshold: 0.6
-    low-score-threshold: 0.02
+    vector-similarity-threshold: 0.3
+    low-score-threshold: 0.01
     low-score-multiplier: 0.9
     normal-score-multiplier: 0.5
     min-threshold: 0.01
@@ -114,7 +114,7 @@ chat:
   service:
     max-documents: 5
     max-question-length: 200
-    no-results-message: "I could not find that information in the available resumes."
+    no-results-message: "I could not find the information."
 
 # Monitoring
 management:

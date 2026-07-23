@@ -21,18 +21,20 @@ import org.springframework.util.StopWatch;
 
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ChatService {
 
-    //    private final ChatClient chatClient;
     private final AiStrategyFactory aiStrategyFactory;
     private final AiProperties aiProperties;
     private final HybridSearchService hybridSearchService;
     private final ChatServiceConfig config;
     private final MeterRegistry meterRegistry;
+
+    private static final int MAX_CONTEXT_CHARS = 4000;
 
     @Timed(value = "chat.ask.time", description = "Time taken to answer question")
     @CircuitBreaker(name = "chatService", fallbackMethod = "askFallback")
@@ -146,74 +148,77 @@ public class ChatService {
     }
 
     private String buildContext(List<Document> documents) {
-        StringBuilder contextBuilder = new StringBuilder();
+        if (documents.isEmpty()) {
+            return "";
+        }
 
-        for (int i = 0; i < documents.size(); i++) {
-            Document doc = documents.get(i);
-            if (i > 0) {
-                contextBuilder.append("\n\n").repeat("=", 50).append("\n\n");
+        Map<String, List<Document>> byDocument = documents.stream()
+                .collect(Collectors.groupingBy(
+                        d -> getMetadataValue(d, MetadataConstants.DOCUMENT_ID),
+                        LinkedHashMap::new,
+                        Collectors.toList()));
+
+        int perDocumentBudget = Math.max(500, MAX_CONTEXT_CHARS / byDocument.size());
+
+        StringBuilder contextBuilder = new StringBuilder();
+        boolean first = true;
+
+        for (Map.Entry<String, List<Document>> entry : byDocument.entrySet()) {
+            if (!first) {
+                contextBuilder.append("\n\n").append("=".repeat(50)).append("\n\n");
+            }
+            first = false;
+
+            List<Document> chunks = entry.getValue();
+            String fileName = getMetadataValue(chunks.get(0), MetadataConstants.FILE_NAME);
+
+            StringBuilder docContent = new StringBuilder();
+            for (Document chunk : chunks) {
+                String content = chunk.getText();
+                if (content == null || content.isBlank()) {
+                    log.warn("Chunk with null/empty content skipped. file={}", fileName);
+                    continue;
+                }
+                docContent.append(content).append("\n\n");
             }
 
-            String content = doc.getText();
-            if (content == null || content.trim().isEmpty()) {
-                log.warn("Document has null/empty content: {}",
-                        getMetadataValue(doc, MetadataConstants.FILE_NAME));
+            if (docContent.isEmpty()) {
                 continue;
             }
+
+            String truncated = truncate(docContent.toString().strip(), perDocumentBudget);
 
             contextBuilder.append(String.format("""
                             FILE: %s
                             DOCUMENT_ID: %s
-                            CHUNK_INDEX: %s
                             
                             CONTENT:
                             %s
                             """,
-                    getMetadataValue(doc, MetadataConstants.FILE_NAME),
-                    getMetadataValue(doc, MetadataConstants.DOCUMENT_ID),
-                    getMetadataValue(doc, MetadataConstants.CHUNK_INDEX),
-                    content
-            ));
+                    fileName,
+                    entry.getKey(),
+                    truncated));
         }
 
-        String context = contextBuilder.toString();
+        return contextBuilder.toString();
+    }
 
-        // If context is too long, truncate it
-        if (context.length() > 4000) {
-            log.warn("Context too long ({} chars), truncating to 4000 chars", context.length());
-            context = context.substring(0, 4000) + "\n... (truncated)";
+    private String truncate(String text, int limit) {
+        if (text.length() <= limit) {
+            return text;
         }
-
-        return context;
+        return text.substring(0, limit) + "\n... (truncated)";
     }
 
     private String generateAnswer(String context, String question) {
         try {
-            // Simplified prompt to get more reliable responses
-            String systemPrompt = """
-                    You are a resume search assistant. Answer the question based on the provided context.
-                    
-                    Rules:
-                    1. Only mention information found in the context
-                    2. Be concise and direct
-                    3. If the context doesn't contain the answer, say so clearly
-                    4. Quote relevant parts when possible
-                    """;
-
-            String userPrompt = String.format("""
-                    Context:
-                    %s
-                    
-                    Question: %s
-                    
-                    Answer:
-                    """, context, question);
+            String systemPrompt = config.getSystemPrompt();
+            String userPrompt = String.format(config.getUserPromptTemplate(), context, question);
 
             log.debug("System prompt: {}", systemPrompt);
             log.debug("User prompt length: {}", userPrompt.length());
 
             AIStrategy aiStrategy = aiStrategyFactory.get(aiProperties.getChatProvider());
-
             String answer = aiStrategy.chat(systemPrompt, userPrompt);
 
             if (answer != null) {
@@ -389,8 +394,7 @@ public class ChatService {
             throw new IllegalArgumentException("Question cannot be null or empty");
         }
         if (question.length() > config.getMaxQuestionLength()) {
-            throw new IllegalArgumentException(
-                    "Question exceeds maximum length of " + config.getMaxQuestionLength());
+            throw new IllegalArgumentException("Question exceeds maximum length of " + config.getMaxQuestionLength());
         }
     }
 }

@@ -33,7 +33,6 @@ public class HybridSearchService {
     private final VectorStore vectorStore;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
-    //    private final ChatClient chatClient;
     private final AiStrategyFactory aiStrategyFactory;
     private final AiProperties aiProperties;
     private final HybridSearchConfig config;
@@ -50,11 +49,27 @@ public class HybridSearchService {
 
         try {
             List<Document> vectorResults = performVectorSearch(query);
-            meterRegistry.counter("hybrid.search.vector.count").increment(vectorResults.size());
+            log.info("Vector search returned {} results for query: '{}'", vectorResults.size(), query);
+            for (int i = 0; i < Math.min(3, vectorResults.size()); i++) {
+                Document doc = vectorResults.get(i);
+                log.info("Vector result[{}]: id={}, doc_id={}, score={}, content_preview={}",
+                        i, doc.getId(),
+                        getDocumentId(doc),
+                        doc.getMetadata().getOrDefault("similarity_score", "N/A"),
+                        doc.getText() != null ? doc.getText().substring(0, Math.min(50, doc.getText().length())) : "NULL");
+            }
 
             String keywordQuery = extractKeywords(query);
             List<Document> keywordResults = performKeywordSearch(keywordQuery);
             meterRegistry.counter("hybrid.search.keyword.count").increment(keywordResults.size());
+            log.info("Keyword search returned {} results for query: '{}'", keywordResults.size(), keywordQuery);
+            for (int i = 0; i < Math.min(3, keywordResults.size()); i++) {
+                Document doc = keywordResults.get(i);
+                log.info("Keyword result[{}]: id={}, doc_id={}, content_preview={}",
+                        i, doc.getId(),
+                        getDocumentId(doc),
+                        doc.getText() != null ? doc.getText().substring(0, Math.min(50, doc.getText().length())) : "NULL");
+            }
 
             if (vectorResults.isEmpty() && keywordResults.isEmpty()) {
                 meterRegistry.counter("hybrid.search.empty").increment();
@@ -93,13 +108,22 @@ public class HybridSearchService {
 
     private List<Document> performVectorSearch(String query) {
         try {
-            return vectorStore.similaritySearch(
+            List<Document> results = vectorStore.similaritySearch(
                     SearchRequest.builder()
                             .query(query)
                             .topK(config.getVectorTopK())
                             .similarityThreshold(config.getVectorSimilarityThreshold())
                             .build()
             );
+
+            for (Document doc : results) {
+                if (doc.getMetadata().get(MetadataConstants.DOCUMENT_ID) == null) {
+                    log.error("Vector search result missing DOCUMENT_ID! Chunk ID: {}, Available metadata: {}",
+                            doc.getId(), doc.getMetadata().keySet());
+                }
+            }
+
+            return results;
         } catch (Exception e) {
             log.error("Vector search failed", e);
             meterRegistry.counter("hybrid.search.vector.error").increment();
@@ -124,107 +148,89 @@ public class HybridSearchService {
     private List<Document> mergeAndRankResults(
             List<Document> vectorResults,
             List<Document> keywordResults,
-            int topK) {
+            int topK
+    ) {
 
         Map<String, Double> chunkScores = new ConcurrentHashMap<>();
-
         applyRrf(chunkScores, vectorResults);
         applyRrf(chunkScores, keywordResults);
 
-        // Document-level aggregation
-        Map<String, Double> documentScores = new HashMap<>();
-        Map<String, Document> bestChunkPerDocument = new LinkedHashMap<>();
-        Map<String, Double> bestChunkScorePerDocument = new HashMap<>();
-
-        // Sort chunks by RRF score
+        // Sort chunks by RRF score, descending
         List<Map.Entry<String, Double>> sortedScores = new ArrayList<>(chunkScores.entrySet());
         sortedScores.sort(Map.Entry.<String, Double>comparingByValue().reversed());
 
+        Map<String, Double> documentScores = new HashMap<>();
+        Map<String, List<Document>> chunksPerDocument = new LinkedHashMap<>();
+
         for (Map.Entry<String, Double> entry : sortedScores) {
             Document document = findDocument(entry.getKey(), vectorResults, keywordResults);
-            if (document == null) continue;
-
-            String documentId = getDocumentId(document);
-            if (documentId == null) continue;
-
-            // Keep highest-scoring chunk per document
-            if (!bestChunkScorePerDocument.containsKey(documentId) ||
-                    entry.getValue() > bestChunkScorePerDocument.get(documentId)) {
-                bestChunkPerDocument.put(documentId, document);
-                bestChunkScorePerDocument.put(documentId, entry.getValue());
+            if (document == null) {
+                log.warn("Document not found for chunk key: {}", entry.getKey());
+                continue;
             }
 
+            String documentId = getDocumentId(document);
+            if (documentId == null) {
+                log.warn("Skipping chunk id={} - missing DOCUMENT_ID metadata. Available metadata: {}",
+                        entry.getKey(), document.getMetadata());
+                continue;
+            }
+
+            log.debug("Processing chunk: doc_id={}, score={}, content_length={}",
+                    documentId, entry.getValue(),
+                    document.getText() != null ? document.getText().length() : 0);
+
+            // chunks arrive already sorted by score, so appending preserves best-first order
+            chunksPerDocument.computeIfAbsent(documentId, id -> new ArrayList<>()).add(document);
             documentScores.merge(documentId, entry.getValue(), Math::max);
         }
 
-        // Calculate adaptive threshold
+        log.info("After RRF merge: {} unique documents, {} total chunks",
+                chunksPerDocument.size(),
+                chunksPerDocument.values().stream().mapToInt(List::size).sum());
+
+        // Cap chunks kept per document so one document can't dominate the whole context
+        int maxChunksPerDocument = config.getMaxChunksPerDocument(); // e.g. 3
+        chunksPerDocument.replaceAll((docId, chunks) ->
+                chunks.size() > maxChunksPerDocument ? chunks.subList(0, maxChunksPerDocument) : chunks);
+
         double maxScore = documentScores.values().stream()
                 .mapToDouble(Double::doubleValue)
                 .max()
                 .orElse(0);
 
         double threshold = calculateAdaptiveThreshold(maxScore);
-
         log.debug("Max score: {}, Threshold: {}", maxScore, threshold);
 
-        // Filter and rank documents
-        List<Document> filteredDocs = filterAndRankDocuments(
-                bestChunkPerDocument, documentScores, threshold, topK);
+        List<Document> filteredDocs = filterAndRankDocuments(chunksPerDocument, documentScores, threshold, topK);
 
         meterRegistry.gauge("hybrid.search.results.count", filteredDocs.size());
-
         return filteredDocs;
     }
 
     private List<Document> filterAndRankDocuments(
-            Map<String, Document> bestChunkPerDocument,
+            Map<String, List<Document>> chunksPerDocument,
             Map<String, Double> documentScores,
             double threshold,
             int topK) {
 
+        List<String> passingDocIds = chunksPerDocument.keySet().stream()
+                .filter(id -> documentScores.getOrDefault(id, 0.0) >= threshold)
+                .sorted(Comparator.comparingDouble((String id) -> documentScores.getOrDefault(id, 0.0)).reversed())
+                .toList();
+
+        if (passingDocIds.isEmpty() && !chunksPerDocument.isEmpty()) {
+            log.info("Threshold filtered all documents. Returning top {} documents by score instead.", topK);
+            passingDocIds = chunksPerDocument.keySet().stream()
+                    .sorted(Comparator.comparingDouble((String id) -> documentScores.getOrDefault(id, 0.0)).reversed())
+                    .toList();
+        }
+
         List<Document> result = new ArrayList<>();
-
-        for (Map.Entry<String, Document> entry : bestChunkPerDocument.entrySet()) {
-            String documentId = entry.getKey();
-            Document doc = entry.getValue();
-            Double score = documentScores.get(documentId);
-
-            if (score != null && score >= threshold) {
-                result.add(doc);
-                log.debug("Document {} passed threshold: score={}, threshold={}",
-                        documentId, score, threshold);
-            }
-        }
-
-        // Sort by score
-        result.sort((d1, d2) -> {
-            String id1 = getDocumentId(d1);
-            String id2 = getDocumentId(d2);
-            Double score1 = documentScores.get(id1);
-            Double score2 = documentScores.get(id2);
-            return Double.compare(score2 != null ? score2 : 0, score1 != null ? score1 : 0);
-        });
-
-        // Limit to topK
-        if (result.size() > topK) {
-            result = result.subList(0, topK);
-        }
-
-        // Fallback: if filtered everything, return top documents
-        if (result.isEmpty() && !bestChunkPerDocument.isEmpty()) {
-            log.info("Threshold filtered all documents. Returning top {} by score.", topK);
-
-            List<Map.Entry<String, Document>> sortedEntries =
-                    new ArrayList<>(bestChunkPerDocument.entrySet());
-            sortedEntries.sort((e1, e2) -> {
-                Double s1 = documentScores.get(e1.getKey());
-                Double s2 = documentScores.get(e2.getKey());
-                return Double.compare(s2 != null ? s2 : 0, s1 != null ? s1 : 0);
-            });
-
-            for (int i = 0; i < Math.min(topK, sortedEntries.size()); i++) {
-                result.add(sortedEntries.get(i).getValue());
-            }
+        for (String docId : passingDocIds.stream().limit(topK).toList()) {
+            result.addAll(chunksPerDocument.get(docId));
+            log.debug("Document {} included: score={}, chunks={}",
+                    docId, documentScores.get(docId), chunksPerDocument.get(docId).size());
         }
 
         return result;
@@ -265,26 +271,64 @@ public class HybridSearchService {
     private List<Document> keywordSearch(String query) {
         final String searchQuery = query.trim();
 
-        return jdbcTemplate.query(
-                config.getKeywordSearchQuery(),
-                (rs, rowNum) -> {
-                    try {
-                        Map<String, Object> metadata = objectMapper.readValue(
-                                rs.getString("metadata"), Map.class);
+        log.info("Executing keyword search with SQL query and parameter: '{}'", searchQuery);
 
-                        return new Document(
-                                rs.getString("id"),
-                                rs.getString("content"),
-                                metadata
-                        );
-                    } catch (JsonProcessingException e) {
-                        log.error("Failed to parse metadata for document", e);
-                        throw new SearchException("Failed to parse document metadata", e);
-                    }
-                },
-                searchQuery,
-                searchQuery
-        );
+        try {
+            return jdbcTemplate.query(
+                    config.getKeywordSearchQuery(),
+                    (rs, rowNum) -> {
+                        try {
+                            Map<String, Object> metadata = objectMapper.readValue(rs.getString("metadata"), Map.class);
+
+                            Document doc = new Document(
+                                    rs.getString("id"),
+                                    rs.getString("content"),
+                                    metadata
+                            );
+
+                            // Validate metadata
+                            if (doc.getMetadata().get(MetadataConstants.DOCUMENT_ID) == null) {
+                                log.warn("Keyword result missing DOCUMENT_ID: id={}", doc.getId());
+                            }
+
+                            return doc;
+                        } catch (JsonProcessingException e) {
+                            log.error("Failed to parse metadata for row {}", rowNum, e);
+                            throw new SearchException("Failed to parse document metadata", e);
+                        }
+                    },
+                    searchQuery,
+                    searchQuery,
+                    config.getKeywordTopK()
+            );
+        } catch (Exception e) {
+            log.error("Keyword search SQL failed for query: '{}'. Error: {}", searchQuery, e.getMessage());
+
+            // Try with simpler query as fallback
+            try {
+                String fallbackQuery = searchQuery.replaceAll("[^\\w\\s]", " ").trim();
+                log.info("Retrying keyword search with cleaned query: '{}'", fallbackQuery);
+                return jdbcTemplate.query(
+                        config.getKeywordSearchQuery(),
+                        (rs, rowNum) -> {
+                            Map<String, Object> metadata = null;
+                            try {
+                                metadata = objectMapper.readValue(
+                                        rs.getString("metadata"), Map.class);
+                            } catch (JsonProcessingException ex) {
+                                throw new RuntimeException(ex);
+                            }
+                            return new Document(rs.getString("id"), rs.getString("content"), metadata);
+                        },
+                        fallbackQuery,
+                        fallbackQuery,
+                        config.getKeywordTopK()
+                );
+            } catch (Exception ex) {
+                log.error("Fallback keyword search also failed", ex);
+                return Collections.emptyList();
+            }
+        }
     }
 
     @CircuitBreaker(name = "keywordExtraction", fallbackMethod = "extractKeywordsFallback")
@@ -316,10 +360,22 @@ public class HybridSearchService {
 
     private String getDocumentId(Document document) {
         try {
-            return (String) document.getMetadata().get(MetadataConstants.DOCUMENT_ID);
+            Object docId = document.getMetadata().get(MetadataConstants.DOCUMENT_ID);
+            if (docId == null) {
+                log.warn("Document {} has no DOCUMENT_ID metadata. Available metadata keys: {}",
+                        document.getId(), document.getMetadata().keySet());
+
+                // Fallback: try to extract from content or use document ID itself
+                String fallbackId = document.getId();
+                log.warn("Using fallback document ID: {}", fallbackId);
+                return fallbackId;
+            }
+            log.debug("Found DOCUMENT_ID: {} for chunk: {}", docId, document.getId());
+            return docId.toString();
         } catch (Exception e) {
-            log.error("Failed to get document ID", e);
-            return null;
+            log.error("Failed to get document ID for chunk: {}", document.getId(), e);
+            // Fallback to chunk ID as document identifier
+            return document.getId();
         }
     }
 
