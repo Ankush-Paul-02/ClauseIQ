@@ -9,3 +9,14 @@ services:
       - "org.springframework.boot.service-connection=postgres"
     ports:
       - '5432:5432'
+
+  app:
+    image: spring-boot-rag-app:latest
+    ports:
+      - "8081:8081"
+    depends_on:
+      - pgvector
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://pgvector:5432/clauseiq
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: root

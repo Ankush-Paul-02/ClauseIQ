@@ -1,0 +1,22 @@
+-- Add tsvector column
+ALTER TABLE vector_store ADD COLUMN IF NOT EXISTS content_tsv tsvector;
+
+-- Create index
+CREATE INDEX IF NOT EXISTS idx_content_tsv ON vector_store USING GIN(content_tsv);
+
+-- Create trigger function
+CREATE OR REPLACE FUNCTION update_content_tsv() RETURNS trigger AS $$
+BEGIN
+    NEW.content_tsv := to_tsvector('english', COALESCE(NEW.content, ''));
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger
+DROP TRIGGER IF EXISTS trg_content_tsv ON vector_store;
+CREATE TRIGGER trg_content_tsv
+    BEFORE INSERT OR UPDATE ON vector_store
+    FOR EACH ROW EXECUTE FUNCTION update_content_tsv();
+
+-- Update existing rows
+UPDATE vector_store SET content_tsv = to_tsvector('english', COALESCE(content, ''));
