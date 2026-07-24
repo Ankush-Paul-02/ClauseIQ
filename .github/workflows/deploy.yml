@@ -42,12 +42,15 @@ jobs:
 
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.2.2
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: IMAGE_NAME
           script: |
-            docker pull $IMAGE_NAME:latest
+            docker pull ${IMAGE_NAME}:latest
 
             docker rm -f clauseiq-app || true
 
@@ -59,6 +62,6 @@ jobs:
               -e SPRING_DATASOURCE_USERNAME=root \
               -e SPRING_DATASOURCE_PASSWORD=root \
               --restart unless-stopped \
-              $IMAGE_NAME:latest
+              ${IMAGE_NAME}:latest
 
             docker image prune -f
